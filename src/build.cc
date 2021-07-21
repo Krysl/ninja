@@ -717,10 +717,63 @@ bool Builder::FinishCommand(CommandRunner::Result* result, string* err) {
   // build perspective.
   vector<Node*> deps_nodes;
   string deps_type = edge->GetBinding("deps");
-  const string deps_prefix = edge->GetBinding("msvc_deps_prefix");
   if (!deps_type.empty()) {
     string extract_err;
-    if (!ExtractDeps(result, deps_type, deps_prefix, &deps_nodes,
+    // get codepage settings for compiler
+    UINT compiler_codepage = CP_ACP;
+    const string msvc_deps_prefix_codepage =
+        edge->GetBinding("msvc_deps_prefix_codepage");
+    if (!msvc_deps_prefix_codepage.empty()) {
+      compiler_codepage = std::stoi(msvc_deps_prefix_codepage);
+    } else {
+      const char* env_msvc_deps_prefix_codepage =
+          getenv("env_msvc_deps_prefix_codepage");
+      if (env_msvc_deps_prefix_codepage)
+        compiler_codepage = atoi(env_msvc_deps_prefix_codepage);
+    }
+
+    // get msvc_deps_prefix to be used
+    const string deps_prefix = edge->GetBinding("msvc_deps_prefix");
+    const char* env_msvc_deps_prefix = getenv("msvc_deps_prefix");
+    string msvc_deps_prefix;
+    UINT matcher_codepage = 0;
+    if (deps_prefix.empty() && env_msvc_deps_prefix) {
+      msvc_deps_prefix = string(env_msvc_deps_prefix);
+      matcher_codepage = CP_UTF8;
+    } else {
+      msvc_deps_prefix = deps_prefix;
+      matcher_codepage = GetACP();
+    }
+    /**
+     * | ninjaConfig | env        | compiler                  |
+     * | ----------- | ---------- | ------------------------- |
+     * | GetACP()    | ???UTF8??? | msvc_deps_prefix_codepage |
+     */
+
+    if (matcher_codepage != compiler_codepage) {
+#define MSVC_DEPS_PREFIX_STRLEN_MAX 80
+      // UTF-8 to WideChar
+      std::wstring w_string(MSVC_DEPS_PREFIX_STRLEN_MAX, '\0');
+      int w_size = MultiByteToWideChar(CP_UTF8, 0, msvc_deps_prefix.c_str(),
+                                       msvc_deps_prefix.size(), &w_string[0],
+                                       MSVC_DEPS_PREFIX_STRLEN_MAX);
+      if (w_size == 0) {
+        Win32Fatal("PrefixToWideChar", "Failed conversion to wide string");
+      }
+      // WideChar to env_msvc_deps_prefix_codepage which maches compiler's
+      // output
+      std::string matcher_prefix_string(MSVC_DEPS_PREFIX_STRLEN_MAX, '\0');
+      int matcher_size = WideCharToMultiByte(
+          compiler_codepage, 0, w_string.c_str(), w_size,
+          &matcher_prefix_string[0], MSVC_DEPS_PREFIX_STRLEN_MAX, NULL, NULL);
+      if (matcher_size == 0) {
+        Win32Fatal("WideCharToCompiler",
+                   "Failed conversion to string in Compiler's codepage");
+      }
+      msvc_deps_prefix = matcher_prefix_string.substr (0,matcher_size);;
+    }
+
+    if (!ExtractDeps(result, deps_type, msvc_deps_prefix, &deps_nodes,
                      &extract_err) &&
         result->success()) {
       if (!result->output.empty())
